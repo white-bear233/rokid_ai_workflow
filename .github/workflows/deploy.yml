@@ -1,0 +1,63 @@
+name: Build image tar and deploy
+
+on:
+  push:
+    branches: [ "main" ]   # 如果你的主分支不是 main，这里改一下
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 拉取代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 准备 Docker 构建环境
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 3. 在 GitHub Runner 上构建镜像
+      - name: Build Docker image
+        run: |
+          docker build -t ai-workflow:latest -f Dockerfile .
+
+      # 4. 将镜像保存为 tar 文件
+      - name: Save image to tar
+        run: |
+          docker save ai-workflow:latest -o ai-workflow.tar
+
+      # 5. 把镜像 tar + docker-compose.yml 传到服务器
+      - name: Copy image and compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "ai-workflow.tar,docker-compose.yml"
+          target: "/opt/mobile-backend/ai-workflow"
+
+      # 6. 服务器上加载镜像并用 docker compose 重启
+      - name: Load image and restart service on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+
+            cd /opt/mobile-backend/ai-workflow
+
+            echo "Load Docker image from tar..."
+            docker load -i ai-workflow.tar
+
+            echo "Restart with docker compose..."
+            # 如果你的服务器上命令是 docker-compose，就改成 docker-compose down/up
+            docker compose down || true
+            docker compose up -d
+
+            echo "Running containers:"
+            docker ps
