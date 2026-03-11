@@ -22,10 +22,15 @@ jobs:
         run: |
           docker build -t ai-workflow:latest -f Dockerfile .
 
-      # 4. 将镜像保存为 tar 文件
+            # 4. 将镜像保存为 tar 文件
       - name: Save image to tar
         run: |
           docker save ai-workflow:latest -o ai-workflow.tar
+
+      # 4.1 修正文件权限，保证 scp-action 能读
+      - name: Fix file permissions
+        run: |
+          chmod 644 ai-workflow.tar docker-compose.yml
 
       # 5. 把镜像 tar + docker-compose.yml 传到服务器
       - name: Copy image and compose file to server
