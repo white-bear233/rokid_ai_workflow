@@ -24,6 +24,7 @@ from typing import Optional
 import httpx
 import os
 import json
+from datetime import datetime
 
 from api.routes import router
 from utils.logger import setup_logger
@@ -107,7 +108,7 @@ async def health_check():
 
     return {
         "status": "healthy",
-        "timestamp": httpx.get("http://worldtimeapi.org/api/timezone").json().get('datetime', ''),
+        "timestamp": datetime.now().isoformat(),
         "services": {
             "dashscope": bool(vision_service.api_key),
             "bocha": bool(search_service.api_key)
