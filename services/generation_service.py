@@ -13,10 +13,10 @@ class GenerationService:
 
     def __init__(self):
         self.api_key = os.getenv("DASHSCOPE_API_KEY", "")
-        # 使用 qwen-vl-plus：多模态模型
-        self.model = "qwen-vl-plus"
-        # 使用通义千问多模态生成 API
-        self.api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        # 使用 qwen-turbo：高速文本生成模型
+        self.model = "qwen-turbo"
+        # 使用通义千问文本生成 API
+        self.api_url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
         self.timeout = 120.0
 
         # 导览模式语气映射
