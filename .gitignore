@@ -55,3 +55,6 @@ Thumbs.db
 
 # Distribution
 *.whl
+
+# Test Directory
+test/
