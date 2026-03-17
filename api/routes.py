@@ -1,12 +1,9 @@
-"""FastAPI 路由模块"""
+"""FastAPI 路由模块 - LangGraph Agent 版本"""
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 import json
 from models.schemas import GuideAnalyzeRequest
-from services.vision_service import VisionService
-from services.search_service import SearchService
-from services.generation_service import GenerationService
-from utils.http_client import get_http_client
+from agent.graph import create_guide_graph
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -14,33 +11,21 @@ logger = setup_logger(__name__)
 # 创建路由
 router = APIRouter(prefix="/api/v1", tags=["API"])
 
-# 初始化服务（每个请求创建新实例）
-def get_services():
-    """获取服务实例"""
-    return {
-        "vision": VisionService(),
-        "search": SearchService(),
-        "generation": GenerationService()
-    }
-
 
 @router.get("/health", tags=["健康检查"])
 async def health_check():
     """健康检查接口"""
-    services = get_services()
     return {
         "status": "healthy",
-        "services": {
-            "dashscope": bool(services["vision"].api_key),
-            "bocha": bool(services["search"].api_key)
-        }
+        "agent": "LangGraph",
+        "version": "3.1.0"
     }
 
 
 @router.post("/guide/analyze", tags=["导览分析"])
 async def guide_analyze(request: GuideAnalyzeRequest):
     """
-    导览分析主入口 - SSE 流式响应（三阶接力模式）
+    导览分析主入口 - LangGraph Agent（返回完整结果）
 
     **请求体**:
     - image_base64: Base64 编码的图片 (带 data:image/ 前缀)
@@ -48,83 +33,80 @@ async def guide_analyze(request: GuideAnalyzeRequest):
     - user_question: 用户提问
     - user_mode: 导览模式（默认模式、亲子模式、情侣模式等）
 
-    **返回**: SSE 流式文本
+    **返回**: JSON 格式的完整回复
     """
-    # 验证 API Keys
-    services = get_services()
-    if not services["vision"].api_key:
-        raise HTTPException(status_code=500, detail="DASHSCOPE_API_KEY 未配置")
-    if not services["search"].api_key:
-        raise HTTPException(status_code=500, detail="BOCHA_API_KEY 未配置")
+    # 创建 Agent 图
+    try:
+        graph = create_guide_graph()
+    except Exception as e:
+        logger.error(f"创建 Agent 图失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Agent 初始化失败: {str(e)}")
 
-    # 异步生成流式响应
-    async def generate():
-        """生成 SSE 流式数据 - 三阶接力"""
-        try:
-            async with get_http_client() as client:
-                # Stage 1: 眼睛（VLM 意图提取与多梯队拆词）
-                yield f"data: {json.dumps({'status': 'processing', 'step': 1, 'message': '正在分析图片意图...'}, ensure_ascii=False)}\n\n"
-
-                try:
-                    intent_data, _ = await services["vision"].extract_intent(
-                        request.image_base64,
-                        request.location,
-                        request.user_question,
-                        client
-                    )
-                    visual_entity = intent_data.get("visual_entity", "")
-                    search_queries = intent_data.get("search_queries", [])
-
-                    if not visual_entity or not search_queries or len(search_queries) != 3:
-                        raise ValueError(f"意图提取数据格式错误: {intent_data}")
-
-                except Exception as e:
-                    error_msg = f"意图提取失败: {str(e)}"
-                    logger.error(error_msg)
-                    yield f"data: {json.dumps({'status': 'error', 'message': f'500: {error_msg}'}, ensure_ascii=False)}\n\n"
-                    return
-
-                # Stage 2: 检索（梯队式并发搜索与去重融合）
-                yield f"data: {json.dumps({'status': 'processing', 'step': 2, 'keywords': search_queries, 'message': '正在联网搜索...'}, ensure_ascii=False)}\n\n"
-
-                search_results = await services["search"].multi_search_with_dedup(
-                    search_queries,
-                    client
-                )
-
-                # Stage 3: 大脑（纯文本 LLM 生成回复）
-                yield f"data: {json.dumps({'status': 'processing', 'step': 3, 'message': '正在生成回复...'}, ensure_ascii=False)}\n\n"
-
-                logger.info(f"[API] 开始流式生成，visual_entity: {visual_entity}")
-
-                # 流式生成最终回复（不传图，只传文字）
-                chunk_count = 0
-                async for chunk in services["generation"].generate_stream(
-                    visual_entity,
-                    request.location,
-                    request.user_question,
-                    request.user_mode,
-                    search_results,
-                    client
-                ):
-                    logger.debug(f"[API] 收到 chunk {chunk_count}: {chunk[:50] if chunk else '(empty)'}...")
-                    yield chunk
-                    chunk_count += 1
-
-                logger.info(f"[API] 流式生成完成，总共 {chunk_count} 个 chunks")
-
-        except Exception as e:
-            logger.error(f"生成响应失败: {e}", exc_info=True)
-            error_msg = {"status": "error", "message": str(e)}
-            yield f"data: {json.dumps(error_msg, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
-            "X-Accel-Buffering": "no"
+    try:
+        # 构建初始状态
+        initial_state = {
+            "messages": [],
+            "image_base64": request.image_base64,
+            "location": request.location,
+            "user_question": request.user_question,
+            "user_mode": request.user_mode,
+            "visual_analysis": None,
+            "search_queries": None,
+            "search_results": None,
+            "weather_info": None
         }
-    )
+
+        logger.info(f"[API] 开始 LangGraph Agent 执行")
+        logger.info(f"[API] 问题: {request.user_question}")
+        logger.info(f"[API] 位置: {request.location}")
+        logger.info(f"[API] 模式: {request.user_mode}")
+
+        # 执行 Agent 图并获取最终状态
+        final_state = await graph.ainvoke(initial_state)
+
+        logger.info(f"[API] LangGraph Agent 执行完成")
+
+        # 从最终状态中提取回复
+        messages = final_state.get("messages", [])
+        final_message = None
+
+        # 查找最后的 AI 消息（跳过 ToolMessage 和工具调用消息）
+        from langchain_core.messages import ToolMessage
+        for msg in reversed(messages):
+            # 跳过工具消息
+            if isinstance(msg, ToolMessage):
+                continue
+            # 跳过有工具调用的消息
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                continue
+            # 找到有内容的消息
+            if hasattr(msg, 'content') and msg.content:
+                final_message = msg.content
+                break
+
+        if not final_message:
+            # 如果没有找到最终消息，返回默认回复
+            final_message = "抱歉，我暂时无法回答这个问题。请尝试换个方式提问。"
+
+        # 提取额外的信息（如果有）
+        visual_analysis = final_state.get("visual_analysis")
+        search_results = final_state.get("search_results")
+        weather_info = final_state.get("weather_info")
+
+        response_data = {
+            "status": "success",
+            "reply": final_message,
+            "metadata": {
+                "location": request.location,
+                "mode": request.user_mode,
+                "visual_analysis": visual_analysis,
+                "has_search_results": bool(search_results),
+                "has_weather_info": bool(weather_info)
+            }
+        }
+
+        return response_data
+
+    except Exception as e:
+        logger.error(f"Agent 执行失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Agent 执行失败: {str(e)}")
