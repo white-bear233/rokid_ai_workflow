@@ -6,7 +6,7 @@ uvicorn[standard]==0.27.0
 httpx==0.26.0
 
 # 数据验证
-pydantic==2.5.3
+pydantic>=2.7.4,<3.0.0
 
 # 环境变量管理
 python-dotenv==1.0.0
