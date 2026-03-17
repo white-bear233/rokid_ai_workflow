@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 import json
+import time
 from models.schemas import GuideAnalyzeRequest
 from agent.graph import create_guide_graph
 from utils.logger import setup_logger
@@ -43,6 +44,9 @@ async def guide_analyze(request: GuideAnalyzeRequest):
         raise HTTPException(status_code=500, detail=f"Agent 初始化失败: {str(e)}")
 
     try:
+        # 记录请求开始时间
+        start_time = time.time()
+
         # 构建初始状态
         initial_state = {
             "messages": [],
@@ -64,7 +68,8 @@ async def guide_analyze(request: GuideAnalyzeRequest):
         # 执行 Agent 图并获取最终状态
         final_state = await graph.ainvoke(initial_state)
 
-        logger.info(f"[API] LangGraph Agent 执行完成")
+        execution_time = time.time() - start_time
+        logger.info(f"[API] LangGraph Agent 执行完成，耗时: {execution_time:.2f}秒")
 
         # 从最终状态中提取回复
         messages = final_state.get("messages", [])
@@ -101,9 +106,13 @@ async def guide_analyze(request: GuideAnalyzeRequest):
                 "mode": request.user_mode,
                 "visual_analysis": visual_analysis,
                 "has_search_results": bool(search_results),
-                "has_weather_info": bool(weather_info)
+                "has_weather_info": bool(weather_info),
+                "execution_time": f"{execution_time:.2f}s"
             }
         }
+
+        total_time = time.time() - start_time
+        logger.info(f"[API] 总耗时: {total_time:.2f}秒 | 准备返回响应")
 
         return response_data
 
