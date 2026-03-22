@@ -26,6 +26,9 @@ class GuideAgentState(TypedDict):
 
     # 可选字段（用于存储中间结果）
     visual_analysis: Optional[str]  # 视觉分析结果
+    visual_entity: Optional[str]  # 识别的主体名称
+    image_description: Optional[str]  # 图片视觉描述（外观、颜色、特点，50字以内）
+    question_type: Optional[str]  # 问题类型（identify/factual/background/recommend）
     search_queries: Optional[list[str]]  # 视觉分析生成的搜索词
     search_results: Optional[str]  # 搜索结果摘要
     weather_info: Optional[str]  # 天气查询结果

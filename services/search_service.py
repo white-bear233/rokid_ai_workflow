@@ -98,44 +98,41 @@ class SearchService:
         client: httpx.AsyncClient
     ) -> str:
         """
-        梯队式并发搜索与去重融合
+        并发搜索与去重融合（支持可变数量搜索词）
 
         Args:
-            search_queries: 3 个不同颗粒度的搜索词 [精确, 主体, 泛化]
+            search_queries: 1-2 个精准的搜索词
             client: HTTP 客户端
 
         Returns:
             str: 去重后的搜索结果摘要文本
         """
-        if len(search_queries) != 3:
-            logger.error(f"[Stage 2] 必须提供 3 个搜索词，当前: {len(search_queries)}")
+        if len(search_queries) < 1 or len(search_queries) > 2:
+            logger.error(f"[Stage 2] 必须提供 1-2 个搜索词，当前: {len(search_queries)}")
             return "（搜索服务异常，基于图片内容回答）"
 
-        # 并发搜索 3 个关键词
-        logger.info(f"[Stage 2] 开始梯队式并发搜索...")
-        logger.info(f"[Stage 2] 精确词: {search_queries[0]}")
-        logger.info(f"[Stage 2] 主体词: {search_queries[1]}")
-        logger.info(f"[Stage 2] 泛化词: {search_queries[2]}")
+        # 并发搜索所有关键词
+        logger.info(f"[Stage 2] 开始并发搜索，共 {len(search_queries)} 个词...")
+        for i, query in enumerate(search_queries):
+            logger.info(f"[Stage 2] 搜索词 {i+1}: {query}")
 
+        # 动态并发搜索
         results_list = await asyncio.gather(
-            self._single_search(search_queries[0], client),
-            self._single_search(search_queries[1], client),
-            self._single_search(search_queries[2], client)
+            *[self._single_search(query, client) for query in search_queries]
         )
 
-        # 梯队截断策略
-        # 精确搜索词：取前 3 条
-        # 主体搜索词：取前 2 条
-        # 泛化搜索词：取前 1 条
+        # 动态截断策略
+        # 第1个搜索词：取前 5 条
+        # 第2个搜索词（如果有）：取前 3 条
         truncated_results = []
-        if results_list[0]:
-            truncated_results.extend(results_list[0][:3])
-        if results_list[1]:
-            truncated_results.extend(results_list[1][:2])
-        if results_list[2]:
-            truncated_results.extend(results_list[2][:1])
+        for i, results in enumerate(results_list):
+            if results:
+                if i == 0:
+                    truncated_results.extend(results[:5])
+                else:
+                    truncated_results.extend(results[:3])
 
-        logger.info(f"[Stage 2] 梯队截断后共 {len(truncated_results)} 条结果")
+        logger.info(f"[Stage 2] 截断后共 {len(truncated_results)} 条结果")
 
         # URL 去重
         seen_urls = set()

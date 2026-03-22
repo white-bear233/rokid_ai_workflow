@@ -106,6 +106,47 @@ async def guide_analyze(request: GuideAnalyzeRequest):
 
                 # 处理视觉分析节点
                 if event_type == "vision":
+                    node_data = event[event_type]
+
+                    # 提取数据
+                    search_queries = node_data.get("search_queries", [])
+                    visual_entity = node_data.get("visual_entity", "")
+                    image_description = node_data.get("image_description", "")
+
+                    step += 1
+
+                    # 发送识别结果
+                    if visual_entity:
+                        progress_data = json.dumps({
+                            "status": "processing",
+                            "step": step,
+                            "message": f"识别主体: {visual_entity}"
+                        }, ensure_ascii=False)
+                        yield f"data: {progress_data}\n\n"
+
+                    # 发送图片描述
+                    if image_description:
+                        step += 1
+                        progress_data = json.dumps({
+                            "status": "processing",
+                            "step": step,
+                            "message": f"图片描述: {image_description[:50]}...",
+                            "image_description": image_description
+                        }, ensure_ascii=False)
+                        yield f"data: {progress_data}\n\n"
+
+                    # 发送搜索关键词
+                    if search_queries:
+                        step += 1
+                        keywords_str = "、".join(search_queries)
+                        progress_data = json.dumps({
+                            "status": "processing",
+                            "step": step,
+                            "message": f"搜索关键词: {keywords_str}",
+                            "search_queries": search_queries
+                        }, ensure_ascii=False)
+                        yield f"data: {progress_data}\n\n"
+
                     step += 1
                     progress_data = json.dumps({
                         "status": "processing",
