@@ -3,8 +3,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 import json
 import time
-from models.schemas import GuideAnalyzeRequest
-from agent.graph import create_guide_graph
+from models.schemas import GuideAnalyzeRequest, TourRequest
+from agent.guide.graph import create_guide_graph
+from agent.travel.graph import create_travel_graph
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -230,3 +231,64 @@ async def guide_analyze(request: GuideAnalyzeRequest):
             "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
         }
     )
+
+
+@router.post("/tour/plan", tags=["旅游规划"])
+async def tour_plan(request: TourRequest):
+    """
+    旅游规划主入口 - LangGraph Agent（同步返回 JSON）
+
+    **请求体**:
+    - destination: 目的地（如"北京"）
+    - days: 游玩天数（1-15天）
+    - travelers: 同行人群（如"带父母"）
+    - intensity: 游玩强度（如"悠闲慢游"）
+    - preferences: 偏好列表（如["历史文化", "自然风光"]）
+    - must_visit: 必去景点列表（如["故宫"]）
+    - custom_requirements: 用户自定义要求
+
+    **返回**: 结构化 JSON 行程单，包含每日活动详情
+    """
+    # 创建 Agent 图
+    try:
+        graph = create_travel_graph()
+    except Exception as e:
+        logger.error(f"创建旅游规划 Agent 图失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Agent 初始化失败: {str(e)}")
+
+    # 构建初始状态
+    initial_state = {
+        "request": request,
+        "raw_poi_names": [],
+        "enriched_pois": [],
+        "weather_info": "",
+        "draft_itinerary": {},
+        "validation_errors": [],
+        "loop_count": 0
+    }
+
+    logger.info(f"[API] 开始旅游规划 - 目的地: {request.destination}, 天数: {request.days}")
+
+    try:
+        # 执行图（同步执行）
+        result = await graph.ainvoke(initial_state)
+
+        # 提取最终行程
+        itinerary = result.get("draft_itinerary", {})
+
+        if not itinerary:
+            raise HTTPException(status_code=500, detail="行程生成失败")
+
+        logger.info(f"[API] 旅游规划完成 - 总天数: {itinerary.get('total_days', 0)}")
+
+        return {
+            "success": True,
+            "itinerary": itinerary,
+            "weather_info": result.get("weather_info", ""),
+            "total_pois": len(result.get("enriched_pois", [])),
+            "loop_count": result.get("loop_count", 0)
+        }
+
+    except Exception as e:
+        logger.error(f"[API] 旅游规划失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"旅游规划失败: {str(e)}")
