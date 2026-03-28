@@ -7,6 +7,33 @@ from utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
+# POI 类型代码常量（常用类型，用于兜底）
+COMMON_POI_TYPES = {
+    # 餐饮服务
+    "餐饮": "050000", "餐厅": "050100", "中餐厅": "050100",
+    "川菜": "050102", "粤菜": "050103", "鲁菜": "050104",
+    "湘菜": "050108", "徽菜": "050109", "东北菜": "050113",
+    "火锅": "050117", "西餐厅": "050200", "日本料理": "050202",
+    "韩国料理": "050203", "快餐厅": "050300", "咖啡厅": "050500",
+    "茶艺馆": "050600", "甜品店": "050900",
+    # 生活服务
+    "洗手间": "200300", "公共厕所": "200301", "停车场": "150900",
+    "加油站": "010100", "充电站": "011100",
+    # 购物服务
+    "便利店": "060100", "超市": "060400", "商场": "060500",
+    # 酒店住宿
+    "酒店": "100100", "宾馆": "100200", "民宿": "100300",
+    # 医疗健康
+    "医院": "090100", "诊所": "090200", "药店": "090300",
+    # 交通设施
+    "地铁站": "150500", "公交站": "150700", "出租车站": "150800",
+    # 休闲娱乐
+    "电影院": "060800", "KTV": "060900",
+    # 旅游景点
+    "景点": "110100", "公园": "110100", "博物馆": "110200",
+}
+
+
 class AmapService:
     """高德地图 API 封装服务"""
 
@@ -352,4 +379,157 @@ class AmapService:
             return None
         except Exception as e:
             logger.error(f"[高德驾车] 规划异常: {e}")
+            return None
+
+    async def geocode(
+        self,
+        client: httpx.AsyncClient,
+        address: str
+    ) -> Optional[str]:
+        """
+        地理编码：地址转换为经纬度
+
+        API 文档: https://lbs.amap.com/api/webservice/guide/api/georegeo
+
+        Args:
+            client: HTTP 客户端
+            address: 地址字符串（如 "黄山市 徽州古城"）
+
+        Returns:
+            str: 经纬度字符串 "lng,lat"，失败返回 None
+        """
+        if not self.api_key:
+            logger.error("[高德地理编码] AMAP_API_KEY 未配置")
+            return None
+
+        url = "https://restapi.amap.com/v3/geocode/geo"
+        params = {
+            "key": self.api_key,
+            "address": address,
+            "output": "JSON"
+        }
+
+        try:
+            response = await client.get(url, params=params, timeout=10.0)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("status") != "1":
+                error_msg = result.get("info", "未知错误")
+                logger.error(f"[高德地理编码] API 错误: {error_msg}")
+                return None
+
+            geocodes = result.get("geocodes", [])
+            if not geocodes:
+                logger.warning(f"[高德地理编码] 未找到坐标: {address}")
+                return None
+
+            location = geocodes[0].get("location", "")
+            logger.info(f"[高德地理编码] 成功: {address} -> {location}")
+            return location
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"[高德地理编码] HTTP 错误: {e.response.status_code}")
+            return None
+        except Exception as e:
+            logger.error(f"[高德地理编码] 异常: {e}")
+            return None
+
+    async def search_nearby_pois(
+        self,
+        client: httpx.AsyncClient,
+        location: str,
+        poi_type: str,
+        radius: int = 1000,
+        page_size: int = 15
+    ) -> Optional[List[Dict]]:
+        """
+        周边POI搜索（POI 2.0 API）
+
+        API 文档: https://lbs.amap.com/api/webservice/guide/api-advanced/newpoisearch
+
+        Args:
+            client: HTTP 客户端
+            location: 中心点经纬度 "lng,lat"
+            poi_type: POI 类型代码（如 "050400"）
+            radius: 搜索半径（米），默认 1000
+            page_size: 返回数量，默认 15
+
+        Returns:
+            List[Dict]: POI 列表，包含 name, address, distance, rating, cost, tel, tag 等
+            None: 搜索失败
+        """
+        if not self.api_key:
+            logger.error("[高德周边搜索] AMAP_API_KEY 未配置")
+            return None
+
+        url = "https://restapi.amap.com/v5/place/around"
+        params = {
+            "key": self.api_key,
+            "location": location,
+            "types": poi_type,
+            "radius": radius,
+            "show_fields": "business,photos",  # 获取商业信息和图片
+            "sortrule": "weight",  # 综合排序（而非距离排序）
+            "page_size": page_size,
+            "page_num": 1
+        }
+
+        try:
+            logger.info(f"[高德周边搜索] 参数: location={location}, type={poi_type}, radius={radius}m")
+
+            response = await client.get(url, params=params, timeout=30.0)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("status") != "1":
+                error_msg = result.get("info", "未知错误")
+                logger.error(f"[高德周边搜索] API 错误: {error_msg}")
+                return None
+
+            pois = result.get("pois", [])
+            if not pois:
+                logger.info(f"[高德周边搜索] 附近无结果")
+                return []
+
+            # 格式化结果，保留完整信息供 Agent 筛选
+            formatted_pois = []
+            for poi in pois:
+                # 提取商业信息
+                business = poi.get("business", {})
+                photos = poi.get("photos", [])
+
+                formatted_poi = {
+                    # 基本信息
+                    "name": poi.get("name", ""),
+                    "id": poi.get("id", ""),
+                    "address": poi.get("address", ""),
+                    "location": poi.get("location", ""),
+                    "distance": poi.get("distance", "未知"),
+                    "type": poi.get("type", ""),
+                    "typecode": poi.get("typecode", ""),
+                    # 区域信息
+                    "pname": poi.get("pname", ""),  # 省
+                    "cityname": poi.get("cityname", ""),  # 市
+                    "adname": poi.get("adname", ""),  # 区
+                    # 商业信息（用于 Agent 筛选）
+                    "rating": business.get("rating", "暂无"),
+                    "cost": business.get("cost", "暂无"),
+                    "tel": business.get("tel", ""),
+                    "opentime_week": business.get("opentime_week", ""),
+                    "tag": business.get("tag", ""),  # 特色标签
+                    "business_area": business.get("business_area", ""),  # 商圈
+                    # 图片
+                    "photos": [p.get("url", "") for p in photos[:3] if p.get("url")]
+                }
+                formatted_pois.append(formatted_poi)
+
+            logger.info(f"[高德周边搜索] 成功: 找到 {len(formatted_pois)} 个 POI")
+            return formatted_pois
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"[高德周边搜索] HTTP 错误: {e.response.status_code}")
+            return None
+        except Exception as e:
+            logger.error(f"[高德周边搜索] 异常: {e}")
             return None

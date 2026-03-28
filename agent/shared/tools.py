@@ -270,6 +270,87 @@ def weather_query_tool(location: str) -> str:
         return f"天气查询异常: {str(e)}"
 
 
+@tool
+def nearby_poi_search_tool(location: str, poi_type_code: str, radius: int = 1000) -> str:
+    """
+    搜索用户当前位置周边的指定类型 POI（如餐厅、洗手间、停车场、便利店等）
+
+    Args:
+        location: 位置描述（如 "黄山市 徽州古城"）
+        poi_type_code: POI 类型代码（如 "050100"中餐厅、"200300"洗手间、"010100"加油站）
+        radius: 搜索半径（米），默认 1000，用户说"最近"时用 500，说"附近"时用 1000
+
+    Returns:
+        周边POI列表，包含名称、地址、距离、评分、人均消费等信息，由 Agent 根据用户需求筛选
+    """
+    logger.info(f"[Tool] 周边POI搜索 - 位置: {location}, 类型: {poi_type_code}, 半径: {radius}m")
+
+    async def _search():
+        try:
+            from services.amap_service import AmapService
+
+            async with get_http_client() as client:
+                amap_service = AmapService()
+
+                # 1. 地理编码：位置 → 经纬度
+                coordinates = await amap_service.geocode(client, location)
+                if not coordinates:
+                    return f"无法获取位置坐标: {location}。请确认地址是否正确。"
+
+                # 2. 周边搜索
+                pois = await amap_service.search_nearby_pois(
+                    client,
+                    location=coordinates,
+                    poi_type=poi_type_code,
+                    radius=radius,
+                    page_size=15
+                )
+
+                if pois is None:
+                    return "周边搜索服务暂时不可用，请稍后再试。"
+
+                if not pois:
+                    return f"在 {location} 周边 {radius}米内未找到该类型的设施。建议扩大搜索范围或尝试其他类型。"
+
+                # 3. 格式化结果（返回完整信息，让 Agent 筛选）
+                result_parts = [
+                    f"【周边设施搜索结果】（{radius}米范围内，共{len(pois)}个）\n",
+                    "以下是搜索到的完整信息，请根据用户的具体要求（如：便宜、好吃、距离近、评分高等）筛选推荐：\n"
+                ]
+
+                for i, poi in enumerate(pois, 1):
+                    # 基本信息
+                    info = f"\n{i}. 【{poi['name']}】\n"
+                    info += f"   地址: {poi['address']}\n"
+                    info += f"   距离: {poi['distance']}米\n"
+
+                    # 商业信息（用于筛选）
+                    if poi.get('rating') and poi['rating'] not in ["暂无", "", "0", "0.0"]:
+                        info += f"   评分: {poi['rating']}\n"
+                    if poi.get('cost') and poi['cost'] not in ["暂无", "", "0", "0.0"]:
+                        info += f"   人均: {poi['cost']}元\n"
+                    if poi.get('tag'):
+                        info += f"   特色: {poi['tag']}\n"
+                    if poi.get('tel'):
+                        info += f"   电话: {poi['tel']}\n"
+                    if poi.get('opentime_week'):
+                        info += f"   营业: {poi['opentime_week']}\n"
+
+                    result_parts.append(info)
+
+                return "".join(result_parts)
+
+        except Exception as e:
+            logger.error(f"[Tool] 周边搜索失败: {e}")
+            return f"周边搜索失败: {str(e)}"
+
+    try:
+        return asyncio.run(_search())
+    except Exception as e:
+        logger.error(f"[Tool] 周边搜索异常: {e}")
+        return f"周边搜索异常: {str(e)}"
+
+
 # ==================== 工具列表 ====================
 
-TOOLS = [analyze_vision_tool, web_search_tool, weather_query_tool]
+TOOLS = [analyze_vision_tool, web_search_tool, weather_query_tool, nearby_poi_search_tool]

@@ -158,11 +158,29 @@ async def guide_analyze(request: GuideAnalyzeRequest):
 
                 # 处理工具节点
                 elif event_type == "tools":
+                    # 检查是否是周边搜索工具
+                    node_data = event[event_type]
+                    messages = node_data.get("messages", [])
+
+                    # 判断工具类型并发送相应的进度消息
+                    tool_message = ""
+                    if messages:
+                        last_msg = messages[-1]
+                        # 通过消息内容判断工具类型
+                        if hasattr(last_msg, 'content') and last_msg.content:
+                            content_str = str(last_msg.content)
+                            if "周边" in content_str or "POI" in content_str or "设施" in content_str:
+                                tool_message = "正在搜索周边设施..."
+                            elif "天气" in content_str:
+                                tool_message = "正在查询天气信息..."
+                            else:
+                                tool_message = "正在获取更多信息..."
+
                     step += 1
                     progress_data = json.dumps({
                         "status": "processing",
                         "step": step,
-                        "message": "正在生成导览内容..."
+                        "message": tool_message or "正在处理工具调用..."
                     }, ensure_ascii=False)
                     yield f"data: {progress_data}\n\n"
 

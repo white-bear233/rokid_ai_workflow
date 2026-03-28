@@ -57,11 +57,23 @@ async def lifespan(app: FastAPI):
     # 启动时
     dashscope_key = os.getenv("DASHSCOPE_API_KEY", "")
     bocha_key = os.getenv("BOCHA_API_KEY", "")
+    amap_key = os.getenv("AMAP_API_KEY", "")
 
     if not dashscope_key:
         logger.warning("⚠️  DASHSCOPE_API_KEY 未配置")
     if not bocha_key:
         logger.warning("⚠️  BOCHA_API_KEY 未配置")
+    if not amap_key:
+        logger.warning("⚠️  AMAP_API_KEY 未配置")
+
+    # 🆕 预加载 POI 映射数据
+    from pathlib import Path
+    from agent.shared.poi_mapper import poi_mapper
+    csv_path = Path(__file__).parent / "agent" / "shared" / "data" / "poi_type_utf8.csv"
+    if poi_mapper.load_from_csv(str(csv_path)):
+        logger.info(f"✅ POI 映射数据预加载完成: {len(poi_mapper._categories)} 条")
+    else:
+        logger.warning("⚠️  POI 映射数据加载失败")
 
     logger.info("🚀 AI 导览微服务启动完成")
     logger.info("📡 框架: FastAPI")
