@@ -258,8 +258,9 @@ async def tour_plan(request: TourRequest):
 
     **请求体**:
     - destination: 目的地（如"北京"）
-    - days: 游玩天数（1-15天）
-    - travelers: 同行人群（如"带父母"）
+    - start_date: 开始日期（ISO格式，如"2024-03-28"）
+    - end_date: 结束日期（ISO格式，如"2024-03-30"）
+    - travel_mode: 同行人群（如"带父母"）
     - intensity: 游玩强度（如"悠闲慢游"）
     - preferences: 偏好列表（如["历史文化", "自然风光"]）
     - must_visit: 必去景点列表（如["故宫"]）
@@ -280,12 +281,13 @@ async def tour_plan(request: TourRequest):
         "raw_poi_names": [],
         "enriched_pois": [],
         "weather_info": "",
+        "weather_by_date": {},
         "draft_itinerary": {},
         "validation_errors": [],
         "loop_count": 0
     }
 
-    logger.info(f"[API] 开始旅游规划 - 目的地: {request.destination}, 天数: {request.days}")
+    logger.info(f"[API] 开始旅游规划 - 目的地: {request.destination}, 日期: {request.start_date} ~ {request.end_date}")
 
     try:
         # 执行图（同步执行）

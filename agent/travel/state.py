@@ -20,7 +20,8 @@ class TravelAgentState(TypedDict):
 
     # API 验真结果
     enriched_pois: List[Dict]  # 高德 API 富化后的真实景点数据
-    weather_info: str  # 目的地天气预报
+    weather_info: str  # 目的地天气预报（整体描述，用于 LLM prompt）
+    weather_by_date: Dict[str, str]  # 按日期索引的天气信息 {"2024-03-28": "晴 12~20°C"}
 
     # LLM 排期结果
     draft_itinerary: Dict  # 行程单 JSON（校验通过后作为最终结果）

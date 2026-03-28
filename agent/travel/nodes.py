@@ -1,6 +1,8 @@
 """旅游规划 Agent 节点函数"""
 import asyncio
 import json
+import re
+from datetime import datetime, timedelta
 from typing import Literal, List, Dict, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -17,6 +19,57 @@ logger = setup_logger(__name__)
 AMAP_RATE_LIMIT_DELAY = 0.3  # 驾车API限制较宽松，可以降低延迟
 
 
+# ==================== 日期工具函数 ====================
+
+def _day_number_to_date(start_date: str, day_number: int) -> str:
+    """
+    将天数编号转换为 ISO 格式日期
+
+    Args:
+        start_date: 开始日期 (ISO 格式)
+        day_number: 天数编号 (从1开始)
+
+    Returns:
+        str: ISO 格式日期
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    target_date = start + timedelta(days=day_number - 1)
+    return target_date.strftime("%Y-%m-%d")
+
+
+def _filter_weather_by_date(
+    weather_info: str,
+    start_date: str,
+    end_date: str
+) -> Dict[str, str]:
+    """
+    从天气描述字符串中提取日期范围内的天气
+
+    Args:
+        weather_info: 高德 API 返回的天气描述（包含多行日期天气）
+        start_date: 旅游开始日期 (ISO 格式)
+        end_date: 旅游结束日期 (ISO 格式)
+
+    Returns:
+        Dict[str, str]: 按日期索引的天气 {"2024-03-28": "晴 12~20°C"}
+    """
+    weather_by_date = {}
+
+    # 解析天气描述中的日期和天气
+    # 格式示例: "2024-03-28：晴，12~20°C" 或 "周四(2024-03-28)：晴，12~20°C"
+    lines = weather_info.split('\n')
+    for line in lines:
+        # 匹配日期格式 YYYY-MM-DD
+        match = re.search(r'(\d{4}-\d{2}-\d{2})', line)
+        if match:
+            date_str = match.group(1)
+            # 筛选日期范围
+            if start_date <= date_str <= end_date:
+                weather_by_date[date_str] = line.strip()
+
+    return weather_by_date
+
+
 # ==================== 1. 智能海选节点 ====================
 
 async def brainstorm_node(state: TravelAgentState) -> TravelAgentState:
@@ -27,7 +80,7 @@ async def brainstorm_node(state: TravelAgentState) -> TravelAgentState:
     输出：state["raw_poi_names"]
     """
     request = state["request"]
-    logger.info(f"[Brainstorm] 开始海选景点 - 目的地: {request.destination}, 天数: {request.days}")
+    logger.info(f"[Brainstorm] 开始海选景点 - 目的地: {request.destination}, 天数: {request.get_days()}")
 
     # 构建 Prompt
     system_prompt = f"""你是一位拥有20年经验的资深旅游规划师。
@@ -36,8 +89,8 @@ async def brainstorm_node(state: TravelAgentState) -> TravelAgentState:
 
 【用户需求】：
 - 目的地：{request.destination}
-- 游玩天数：{request.days}天
-- 同行人群：{request.travelers}
+- 游玩天数：{request.get_days()}天
+- 同行人群：{request.travel_mode}
 - 游玩强度：{request.intensity}
 - 兴趣偏好：{', '.join(request.preferences) if request.preferences else '无特殊偏好'}
 - 必去景点：{', '.join(request.must_visit) if request.must_visit else '无'}
@@ -163,9 +216,10 @@ async def grounding_node(state: TravelAgentState) -> TravelAgentState:
     实体对齐与环境感知节点：并发调用高德 API 验真景点 + 获取天气
 
     输入：state["raw_poi_names"], state["request"].destination
-    输出：state["enriched_pois"], state["weather_info"]
+    输出：state["enriched_pois"], state["weather_info"], state["weather_by_date"]
     """
-    destination = state["request"].destination
+    request = state["request"]
+    destination = request.destination
     poi_names = state["raw_poi_names"]
     logger.info(f"[Grounding] 开始验真 {len(poi_names)} 个景点")
 
@@ -202,8 +256,17 @@ async def grounding_node(state: TravelAgentState) -> TravelAgentState:
         if isinstance(weather_info, Exception):
             logger.warning(f"[Grounding] 天气查询异常: {weather_info}")
             weather_info = "天气信息暂时不可获取"
+            weather_by_date = {}
         elif not weather_info:
             weather_info = "天气信息暂时不可获取"
+            weather_by_date = {}
+        else:
+            # 从天气描述中筛选旅游日期范围内的天气
+            weather_by_date = _filter_weather_by_date(
+                weather_info,
+                request.start_date,
+                request.end_date
+            )
 
         logger.info(f"[Grounding] 验真完成，成功富化 {len(enriched_pois)} 个景点")
 
@@ -212,6 +275,7 @@ async def grounding_node(state: TravelAgentState) -> TravelAgentState:
 
         state["enriched_pois"] = merged_pois
         state["weather_info"] = weather_info
+        state["weather_by_date"] = weather_by_date
 
     return state
 
@@ -283,8 +347,8 @@ async def planner_node(state: TravelAgentState) -> TravelAgentState:
 
 【用户需求】：
 - 目的地：{request.destination}
-- 游玩天数：{request.days}天
-- 同行人群：{request.travelers}
+- 游玩天数：{request.get_days()}天
+- 同行人群：{request.travel_mode}
 - 游玩强度：{request.intensity}
 - 必去景点：{', '.join(request.must_visit) if request.must_visit else '无'}
 
@@ -324,7 +388,7 @@ async def planner_node(state: TravelAgentState) -> TravelAgentState:
 
 【输出格式】（严格按 JSON 格式输出）：
 {{
-  "total_days": {request.days},
+  "total_days": {request.get_days()},
   "daily_itinerary": [
     {{
       "day": 1,
@@ -371,8 +435,20 @@ async def planner_node(state: TravelAgentState) -> TravelAgentState:
 
         itinerary = json.loads(content)
 
-        # 添加景点详细信息
+        # 添加景点详细信息 + 日期后处理 + 天气关联
+        weather_by_date = state.get("weather_by_date", {})
         for day_plan in itinerary.get("daily_itinerary", []):
+            day_number = day_plan.get("day", 1)
+
+            # 将 "第X天" 转换为 ISO 日期
+            date_iso = _day_number_to_date(request.start_date, day_number)
+            day_plan["date"] = date_iso
+
+            # 关联天气信息
+            if date_iso in weather_by_date:
+                day_plan["weather"] = weather_by_date[date_iso]
+
+            # 添加景点详细信息
             for activity in day_plan.get("activities", []):
                 poi_id = activity.get("poi_id")
                 # 从 enriched_pois 中查找详细信息
@@ -398,10 +474,11 @@ async def planner_node(state: TravelAgentState) -> TravelAgentState:
 
 def _create_fallback_itinerary(request, enriched_pois):
     """创建降级行程（当 LLM 失败时）"""
-    pois_per_day = max(1, min(len(enriched_pois) // request.days, 3))
+    days = request.get_days()
+    pois_per_day = max(1, min(len(enriched_pois) // days, 3))
     daily_itinerary = []
 
-    for day in range(request.days):
+    for day in range(days):
         start_idx = day * pois_per_day
         end_idx = min(start_idx + pois_per_day, len(enriched_pois))
         day_pois = enriched_pois[start_idx:end_idx]
@@ -417,15 +494,18 @@ def _create_fallback_itinerary(request, enriched_pois):
                 "reason": "根据用户偏好推荐"
             })
 
+        # 使用 ISO 日期格式
+        date_iso = _day_number_to_date(request.start_date, day + 1)
+
         daily_itinerary.append({
             "day": day + 1,
-            "date": f"第{day + 1}天",
+            "date": date_iso,
             "weather_adaptation": "根据当天天气灵活调整",
             "activities": activities
         })
 
     return {
-        "total_days": request.days,
+        "total_days": days,
         "daily_itinerary": daily_itinerary
     }
 
