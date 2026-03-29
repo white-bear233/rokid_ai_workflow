@@ -225,11 +225,19 @@ class VisionService:
                 else:
                     raise ValueError(f"无法从响应中提取有效 JSON: {raw_text}")
 
-            # 验证 JSON 结构
-            if "visual_entity" not in intent_data:
-                raise ValueError(f"JSON 缺少 visual_entity 字段: {intent_data}")
+            # 验证 JSON 结构 - 兼容 visual_entity（单数）和 visual_entities（复数）
+            if "visual_entity" not in intent_data and "visual_entities" not in intent_data:
+                raise ValueError(f"JSON 缺少 visual_entity/visual_entities 字段: {intent_data}")
+
+            # 统一转换为 visual_entity（单数）供后续使用
+            if "visual_entities" in intent_data and "visual_entity" not in intent_data:
+                entities = intent_data["visual_entities"]
+                intent_data["visual_entity"] = entities[0] if entities else ""
+
+            # question_type 是可选字段，游记场景可能不返回此字段
             if "question_type" not in intent_data:
-                raise ValueError(f"JSON 缺少 question_type 字段: {intent_data}")
+                intent_data["question_type"] = "identify"  # 默认值
+                logger.info("[Stage 1] question_type 未返回，使用默认值: identify")
 
             # 处理 question_type：如果包含多个类型，提取第一个有效的
             valid_types = ["factual", "background", "identify", "recommend"]
@@ -247,14 +255,26 @@ class VisionService:
                     intent_data["question_type"] = raw_question_type.split()[0]
                     logger.warning(f"[Stage 1] question_type 无效，自动提取第一个词: {raw_question_type} -> {intent_data['question_type']}")
 
-            # 验证 question_type 是否在有效类型中
-            if intent_data["question_type"] not in valid_types:
-                raise ValueError(f"question_type 必须是 {valid_types} 之一: {intent_data}")
+            # 验证 question_type 是否在有效类型中（仅当存在时才验证）
+            if "question_type" in intent_data and intent_data["question_type"] not in valid_types:
+                logger.warning(f"[Stage 1] question_type '{intent_data['question_type']}' 不在有效类型中，使用默认值")
+                intent_data["question_type"] = "identify"
 
-            if "search_queries" not in intent_data or not isinstance(intent_data["search_queries"], list):
-                raise ValueError(f"JSON 缺少 search_queries 字段或格式错误: {intent_data}")
-            if len(intent_data["search_queries"]) < 1:
-                raise ValueError(f"search_queries 必须至少包含 1 个搜索词: {intent_data}")
+            # search_queries 是可选字段（游记场景不需要，问答场景需要）
+            if "search_queries" in intent_data:
+                if not isinstance(intent_data["search_queries"], list):
+                    logger.warning(f"[Stage 1] search_queries 格式错误，已忽略")
+                    intent_data["search_queries"] = []
+                elif len(intent_data["search_queries"]) > 0:
+                    # 验证搜索词是否包含主体
+                    visual_entity = intent_data.get("visual_entity", "")
+                    for query in intent_data["search_queries"]:
+                        if visual_entity and visual_entity not in query:
+                            logger.warning(f"[Stage 1] 搜索词 '{query}' 不包含主体 '{visual_entity}'")
+                    logger.info(f"[Stage 1] 搜索词: {intent_data['search_queries']}")
+            else:
+                # 游记场景不需要 search_queries，初始化为空列表
+                intent_data["search_queries"] = []
 
             # image_description 是可选字段，如果存在则验证长度
             if "image_description" in intent_data and intent_data["image_description"]:
@@ -262,14 +282,7 @@ class VisionService:
                 if desc_len > 50:
                     logger.warning(f"[Stage 1] image_description 长度 {desc_len} 超过 50 字建议，但允许通过")
 
-            # 验证搜索词是否包含主体
-            visual_entity = intent_data.get("visual_entity", "")
-            for query in intent_data["search_queries"]:
-                if visual_entity not in query:
-                    logger.warning(f"[Stage 1] 搜索词 '{query}' 不包含主体 '{visual_entity}'")
-
-            logger.info(f"[Stage 1] 提取成功 - 视觉主体: {intent_data['visual_entity']}")
-            logger.info(f"[Stage 1] 搜索词: {intent_data['search_queries']}")
+            logger.info(f"[Stage 1] 提取成功 - 视觉主体: {intent_data.get('visual_entity', '未知')}")
 
             return intent_data, result
 

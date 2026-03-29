@@ -1,11 +1,12 @@
 """LLM 工厂模块 - 统一管理 LLM 初始化"""
 import os
+from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage
 
 
 def create_llm(
-    model: str | None = None,
+    model: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 3000,
     timeout: float = 120.0

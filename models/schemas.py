@@ -56,3 +56,41 @@ class TourRequest(BaseModel):
         start = datetime.strptime(self.start_date, "%Y-%m-%d")
         end = datetime.strptime(self.end_date, "%Y-%m-%d")
         return (end - start).days + 1
+
+
+class JournalGenerateRequest(BaseModel):
+    """游记生成请求模型"""
+    photos: List[str] = Field(..., description="Base64编码的图片列表 (最多9张)")
+    location_hint: str = Field(default="", description="用户提供的地点提示")
+    writing_style: str = Field(default="文艺", description="写作风格：文艺/幽默/简洁/故事")
+    user_mode: str = Field(default="默认模式", description="用户模式：默认模式/亲子模式/情侣模式")
+    custom_requirements: str = Field(default="", description="用户自定义要求")
+
+    @field_validator('photos')
+    @classmethod
+    def validate_photos(cls, v):
+        """校验照片数量"""
+        if not v or len(v) == 0:
+            raise ValueError("至少需要1张照片")
+        if len(v) > 9:
+            raise ValueError("最多支持9张照片")
+        return v
+
+    @field_validator('writing_style')
+    @classmethod
+    def validate_writing_style(cls, v):
+        """校验写作风格"""
+        valid_styles = ["文艺", "幽默", "简洁", "故事"]
+        if v not in valid_styles:
+            raise ValueError(f"写作风格必须是以下之一: {valid_styles}")
+        return v
+
+    @field_validator('user_mode')
+    @classmethod
+    def validate_user_mode(cls, v):
+        """校验用户模式"""
+        valid_modes = ["默认模式", "亲子模式", "情侣模式"]
+        if v not in valid_modes:
+            raise ValueError(f"用户模式必须是以下之一: {valid_modes}")
+        return v
+
