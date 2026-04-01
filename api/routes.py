@@ -3,7 +3,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 import json
 import time
-from models.schemas import GuideAnalyzeRequest, TourRequest, JournalGenerateRequest
+from models.schemas import (
+    GuideAnalyzeRequest, TourRequest, JournalGenerateRequest,
+    GuideResponse, GuideResponseData
+)
 from agent.guide.graph import create_guide_graph
 from agent.travel.graph import create_travel_graph
 from agent.journal.graph import create_journal_graph
@@ -21,14 +24,14 @@ async def health_check():
     return {
         "status": "healthy",
         "agent": "LangGraph",
-        "version": "3.1.0"
+        "version": "3.2.0"
     }
 
 
-@router.post("/guide/analyze", tags=["导览分析"])
+@router.post("/guide/analyze", response_model=GuideResponse, tags=["导览分析"])
 async def guide_analyze(request: GuideAnalyzeRequest):
     """
-    导览分析主入口 - LangGraph Agent（SSE 流式响应）
+    导览分析主入口 - LangGraph Agent（同步返回 JSON）
 
     **请求体**:
     - image_base64: Base64 编码的图片 (带 data:image/ 前缀)
@@ -36,21 +39,37 @@ async def guide_analyze(request: GuideAnalyzeRequest):
     - user_question: 用户提问
     - user_mode: 导览模式（默认模式、亲子模式、情侣模式等）
 
-    **返回**: SSE 流式响应，格式为：
-    ```
-    data: {"status": "processing", "step": 1, "message": "正在分析图片..."}
-    data: {"status": "processing", "step": 2, "message": "正在联网搜索相关信息..."}
-    data: {"text": "您"}
-    data: {"text": "眼前"}
-    data: {"text": "这座"}
-    ...
-    data: [DONE]
+    **返回**: 结构化 JSON 响应
+    ```json
+    {
+      "code": 200,
+      "message": "success",
+      "data": {
+        "guideText": "导览文字内容...",
+        "guideCard": {
+          "title": "推荐主题",
+          "pages": [
+            {
+              "text": "每页导览文字",
+              "image": {
+                "id": "img_ref_1",
+                "url": "https://...",
+                "caption": "图片说明"
+              }
+            }
+          ]
+        }
+      }
+    }
     ```
 
-    **事件类型**:
-    - 进度事件：{"status": "processing", "step": N, "message": "..."}
-    - 文本片段：{"text": "内容片段"}
-    - 完成标志：data: [DONE]
+    **字段说明**:
+    - guideText: 主要导览文字
+    - guideCard: 导览卡片（仅POI推荐场景，其他场景为null）
+      - title: 推荐主题标题
+      - pages: 推荐内容数组
+        - text: 每页导览文字
+        - image: 图片信息（id, url, caption）
     """
     # 创建 Agent 图
     try:
@@ -69,187 +88,43 @@ async def guide_analyze(request: GuideAnalyzeRequest):
         "visual_analysis": None,
         "search_queries": None,
         "search_results": None,
-        "weather_info": None
+        "weather_info": None,
+        # 新增字段
+        "response_type": None,
+        "guide_text": None,
+        "guide_card": None,
+        "poi_results": None
     }
 
-    logger.info(f"[API] 开始 LangGraph Agent SSE 流式执行")
-    logger.info(f"[API] 问题: {request.user_question}")
-    logger.info(f"[API] 位置: {request.location}")
-    logger.info(f"[API] 模式: {request.user_mode}")
+    logger.info(f"[API] 开始导览分析 - 问题: {request.user_question}")
+    logger.info(f"[API] 位置: {request.location}, 模式: {request.user_mode}")
 
-    async def generate_sse():
-        """
-        SSE 流式生成器 - 符合 Android 客户端规范
-
-        输出格式：
-        - 进度事件：{"status": "processing", "step": N, "message": "..."}
-        - 文本片段：{"text": "内容片段"}
-        - 完成标志：data: [DONE]
-        """
+    try:
         start_time = time.time()
-        final_message = None
-        step = 0
 
-        try:
-            # 发送初始进度
-            step += 1
-            progress_data = json.dumps({
-                "status": "processing",
-                "step": step,
-                "message": "正在分析图片..."
-            }, ensure_ascii=False)
-            yield f"data: {progress_data}\n\n"
+        # 同步执行图
+        result = await graph.ainvoke(initial_state)
 
-            # 使用 astream 获取流式事件
-            async for event in graph.astream(initial_state):
-                # 记录事件类型
-                event_type = list(event.keys())[0] if event else "unknown"
-                logger.debug(f"[API-SSE] 事件类型: {event_type}")
+        # 提取结构化响应
+        response_type = result.get("response_type", "text")
+        guide_text = result.get("guide_text", "导览生成失败")
+        guide_card = result.get("guide_card")
 
-                # 处理视觉分析节点
-                if event_type == "vision":
-                    node_data = event[event_type]
+        total_time = time.time() - start_time
+        logger.info(f"[API] 导览分析完成 - 类型: {response_type}, 耗时: {total_time:.2f}秒")
 
-                    # 提取数据
-                    search_queries = node_data.get("search_queries", [])
-                    visual_entity = node_data.get("visual_entity", "")
-                    image_description = node_data.get("image_description", "")
+        return GuideResponse(
+            code=200,
+            message="success",
+            data=GuideResponseData(
+                guideText=guide_text,
+                guideCard=guide_card if response_type == "card" else None
+            )
+        )
 
-                    step += 1
-
-                    # 发送识别结果
-                    if visual_entity:
-                        progress_data = json.dumps({
-                            "status": "processing",
-                            "step": step,
-                            "message": f"识别主体: {visual_entity}"
-                        }, ensure_ascii=False)
-                        yield f"data: {progress_data}\n\n"
-
-                    # 发送图片描述
-                    if image_description:
-                        step += 1
-                        progress_data = json.dumps({
-                            "status": "processing",
-                            "step": step,
-                            "message": f"图片描述: {image_description[:50]}...",
-                            "image_description": image_description
-                        }, ensure_ascii=False)
-                        yield f"data: {progress_data}\n\n"
-
-                    # 发送搜索关键词
-                    if search_queries:
-                        step += 1
-                        keywords_str = "、".join(search_queries)
-                        progress_data = json.dumps({
-                            "status": "processing",
-                            "step": step,
-                            "message": f"搜索关键词: {keywords_str}",
-                            "search_queries": search_queries
-                        }, ensure_ascii=False)
-                        yield f"data: {progress_data}\n\n"
-
-                    step += 1
-                    progress_data = json.dumps({
-                        "status": "processing",
-                        "step": step,
-                        "message": "正在联网搜索相关信息..."
-                    }, ensure_ascii=False)
-                    yield f"data: {progress_data}\n\n"
-
-                # 处理工具节点
-                elif event_type == "tools":
-                    # 检查是否是周边搜索工具
-                    node_data = event[event_type]
-                    messages = node_data.get("messages", [])
-
-                    # 判断工具类型并发送相应的进度消息
-                    tool_message = ""
-                    if messages:
-                        last_msg = messages[-1]
-                        # 通过消息内容判断工具类型
-                        if hasattr(last_msg, 'content') and last_msg.content:
-                            content_str = str(last_msg.content)
-                            if "周边" in content_str or "POI" in content_str or "设施" in content_str:
-                                tool_message = "正在搜索周边设施..."
-                            elif "天气" in content_str:
-                                tool_message = "正在查询天气信息..."
-                            else:
-                                tool_message = "正在获取更多信息..."
-
-                    step += 1
-                    progress_data = json.dumps({
-                        "status": "processing",
-                        "step": step,
-                        "message": tool_message or "正在处理工具调用..."
-                    }, ensure_ascii=False)
-                    yield f"data: {progress_data}\n\n"
-
-                # 检查是否是 agent 节点的输出
-                elif event_type == "agent":
-                    node_data = event[event_type]
-                    messages = node_data.get("messages", [])
-
-                    if messages:
-                        last_message = messages[-1]
-
-                        # 只处理 AIMessage 且有内容的消息（跳过工具调用）
-                        from langchain_core.messages import AIMessage
-                        if isinstance(last_message, AIMessage):
-                            # 跳过有工具调用的消息
-                            if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-                                logger.debug(f"[API-SSE] 跳过工具调用消息")
-                                continue
-
-                            # 获取内容
-                            content = last_message.content
-                            if content:
-                                final_message = content
-                                logger.debug(f"[API-SSE] 准备发送内容: {content[:50]}...")
-
-                                # 🎯 关键改动：分块发送文本（逐字或逐词）
-                                # 方案1：逐字发送（更流畅）
-                                # for char in content:
-                                #     chunk_data = json.dumps({"text": char}, ensure_ascii=False)
-                                #     yield f"data: {chunk_data}\n\n"
-
-                                # 方案2：逐词发送（更实用，推荐）
-                                # 按照空格和标点符号分割
-                                import re
-                                words = re.findall(r'[\s\S]', content)  # 逐字符
-                                # words = re.findall(r'[^，。！？\s]+[，。！？]?', content)  # 逐词/句
-
-                                for word in words:
-                                    chunk_data = json.dumps({"text": word}, ensure_ascii=False)
-                                    yield f"data: {chunk_data}\n\n"
-                                    # 可选：添加延迟模拟流式效果
-                                    # import asyncio
-                                    # await asyncio.sleep(0.01)
-
-            # 流式输出完成，发送结束标记
-            total_time = time.time() - start_time
-            logger.info(f"[API-SSE] 流式输出完成，总耗时: {total_time:.2f}秒")
-
-            # 发送结束标记
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            logger.error(f"[API-SSE] Agent 执行失败: {e}", exc_info=True)
-            # 发送错误信息
-            error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
-            yield f"data: {error_data}\n\n"
-            yield "data: [DONE]\n\n"
-
-    # 返回 SSE 流式响应
-    return StreamingResponse(
-        generate_sse(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
-        }
-    )
+    except Exception as e:
+        logger.error(f"[API] 导览分析失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"导览分析失败: {str(e)}")
 
 
 @router.post("/tour/plan", tags=["旅游规划"])

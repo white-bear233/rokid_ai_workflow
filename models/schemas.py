@@ -4,6 +4,42 @@ from typing import Optional, List
 from datetime import datetime
 
 
+# ==================== 导览响应模型 ====================
+
+class GuideCardImage(BaseModel):
+    """导览卡片图片"""
+    id: str = Field(..., description="图片唯一ID")
+    url: str = Field(..., description="图片URL")
+    caption: str = Field(..., description="图片说明")
+
+
+class GuideCardPage(BaseModel):
+    """导览卡片单页"""
+    text: str = Field(..., description="每页导览文字")
+    image: Optional[GuideCardImage] = Field(None, description="图片信息")
+
+
+class GuideCard(BaseModel):
+    """导览卡片"""
+    title: str = Field(..., description="推荐主题标题")
+    pages: List[GuideCardPage] = Field(..., description="推荐内容数组")
+
+
+class GuideResponseData(BaseModel):
+    """导览响应数据"""
+    guideText: str = Field(..., description="主要导览文字")
+    guideCard: Optional[GuideCard] = Field(None, description="导览卡片（推荐场景）")
+
+
+class GuideResponse(BaseModel):
+    """导览响应"""
+    code: int = Field(default=200, description="状态码")
+    message: str = Field(default="success", description="消息")
+    data: GuideResponseData
+
+
+# ==================== 请求模型 ====================
+
 class GuideAnalyzeRequest(BaseModel):
     """导览分析请求模型"""
     image_base64: str = Field(..., description="Base64编码的图片 (带 data:image/... 前缀)")

@@ -1,7 +1,26 @@
 """LangGraph Agent 状态定义"""
-from typing import TypedDict, Annotated, Sequence, Optional
+from typing import TypedDict, Annotated, Sequence, Optional, List, Dict
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
+
+
+class GuideCardImage(TypedDict):
+    """导览卡片图片结构"""
+    id: str  # 图片唯一ID
+    url: str  # 图片URL
+    caption: str  # 图片说明
+
+
+class GuideCardPage(TypedDict):
+    """导览卡片单页结构"""
+    text: str  # 每页导览文字
+    image: Optional[GuideCardImage]  # 图片信息（可选）
+
+
+class GuideCard(TypedDict):
+    """导览卡片结构"""
+    title: str  # 推荐主题标题
+    pages: List[GuideCardPage]  # 推荐内容数组
 
 
 class GuideAgentState(TypedDict):
@@ -32,3 +51,9 @@ class GuideAgentState(TypedDict):
     search_queries: Optional[list[str]]  # 视觉分析生成的搜索词
     search_results: Optional[str]  # 搜索结果摘要
     weather_info: Optional[str]  # 天气查询结果
+
+    # 新增：结构化输出
+    response_type: Optional[str]  # "text" 或 "card"
+    guide_text: Optional[str]  # 主导览文字
+    guide_card: Optional[GuideCard]  # 卡片数据（推荐场景）
+    poi_results: Optional[List[Dict]]  # 带图片的POI数据

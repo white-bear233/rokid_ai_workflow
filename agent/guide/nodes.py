@@ -1,4 +1,5 @@
 """智能导览 Agent 节点函数"""
+import json
 from typing import Literal
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 
@@ -276,3 +277,207 @@ def should_continue(state: GuideAgentState) -> Literal["tools", "vision", "end"]
 
     logger.info("[Router] LLM 生成最终回复，结束流程")
     return "end"
+
+
+# ==================== 工具执行器节点 ====================
+
+async def tool_executor_node(state: GuideAgentState) -> GuideAgentState:
+    """
+    工具执行后的处理器：解析工具返回的JSON数据
+
+    特别处理POI搜索结果，提取并存储结构化数据
+    """
+    messages = state["messages"]
+
+    # 查找最近的ToolMessage
+    tool_message = None
+    tool_name = None
+
+    for msg in reversed(messages):
+        if isinstance(msg, ToolMessage):
+            tool_message = msg
+            # 从tool_call_id或内容推断工具名称
+            break
+
+    if not tool_message:
+        return state
+
+    # 尝试解析JSON结果
+    try:
+        content = tool_message.content
+        if isinstance(content, str) and content.startswith("{"):
+            result = json.loads(content)
+
+            # 检查是否是POI搜索结果
+            if result.get("success") and "pois" in result:
+                pois = result.get("pois", [])
+                state["poi_results"] = pois
+                logger.info(f"[Tool Executor] 解析POI结果: {len(pois)}个")
+
+                # 增强ToolMessage内容，添加格式化说明
+                enhanced_content = "【POI搜索结果】（JSON格式已解析）\n"
+                for i, poi in enumerate(pois, 1):
+                    enhanced_content += f"{i}. {poi['name']} - {poi['distance']}米"
+                    if poi.get('rating') and poi['rating'] != "暂无":
+                        enhanced_content += f" - 评分{poi['rating']}"
+                    enhanced_content += "\n"
+                enhanced_content += "\n请根据用户需求推荐合适的POI。"
+
+                # 更新消息内容
+                tool_message.content = enhanced_content
+
+    except json.JSONDecodeError:
+        pass  # 不是JSON格式，保持原样
+    except Exception as e:
+        logger.warning(f"[Tool Executor] 解析工具结果失败: {e}")
+
+    return state
+
+
+# ==================== 结构化生成节点 ====================
+
+async def structure_generator_node(state: GuideAgentState) -> GuideAgentState:
+    """
+    结构化生成节点：将Agent的最终回复转换为结构化JSON格式
+
+    触发条件：
+    - 有POI搜索结果时生成GuideCard
+    - 其他情况只返回guideText
+    """
+    logger.info("[Structure Generator] 开始生成结构化响应...")
+
+    # 获取Agent的最终回复
+    messages = state["messages"]
+    agent_response = None
+
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and msg.content:
+            # 跳过有工具调用的消息
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                continue
+            agent_response = msg.content
+            break
+
+    if not agent_response:
+        logger.error("[Structure Generator] 无法找到Agent回复")
+        state["response_type"] = "text"
+        state["guide_text"] = "导览生成失败，请重试。"
+        return state
+
+    # 判断是否需要生成GuideCard
+    poi_results = state.get("poi_results")
+
+    if poi_results:
+        # 有POI结果，生成GuideCard
+        logger.info("[Structure Generator] 检测到POI结果，生成GuideCard")
+        guide_card = await _generate_guide_card(state, agent_response, poi_results)
+
+        if guide_card:
+            state["response_type"] = "card"
+            state["guide_text"] = agent_response
+            state["guide_card"] = guide_card
+            logger.info(f"[Structure Generator] GuideCard生成成功: {len(guide_card['pages'])}页")
+        else:
+            # 生成失败，降级为纯文本
+            logger.warning("[Structure Generator] GuideCard生成失败，降级为纯文本")
+            state["response_type"] = "text"
+            state["guide_text"] = agent_response
+    else:
+        # 无POI结果，只返回文本
+        state["response_type"] = "text"
+        state["guide_text"] = agent_response
+        logger.info(f"[Structure Generator] 生成纯文本响应")
+
+    return state
+
+
+async def _generate_guide_card(state: GuideAgentState, agent_response: str, poi_results: list) -> dict | None:
+    """
+    生成GuideCard结构
+
+    Args:
+        state: Agent状态
+        agent_response: Agent的原始回复
+        poi_results: POI搜索结果
+
+    Returns:
+        GuideCard字典，失败返回None
+    """
+    # 构建结构化提示词
+    system_prompt = f"""你是一个数据结构化专家。请将导览员的推荐内容转换为JSON格式的卡片结构。
+
+【导览员的推荐内容】：
+{agent_response}
+
+【POI搜索结果】：
+{json.dumps(poi_results, ensure_ascii=False, indent=2)}
+
+【输出要求】：
+1. 生成一个合适的标题（5-10字，如"附近美食推荐"）
+2. 为每个POI生成一个page（最多5个）
+3. 每个page包含：
+   - text: 该POI的推荐语（50-80字，要有吸引力）
+   - image: 从POI的photos数组中选取
+     - id: 使用 "img_ref_1", "img_ref_2" 等格式
+     - url: 直接使用POI的photos[0]（如果存在）
+     - caption: 图片说明（如"XX餐厅环境图"）
+
+4. 严格输出以下JSON格式（不要包含```json标记）：
+{{
+  "title": "推荐主题标题",
+  "pages": [
+    {{
+      "text": "这家餐厅评分4.8，推荐特色菜...",
+      "image": {{
+        "id": "img_ref_1",
+        "url": "图片URL",
+        "caption": "餐厅环境图"
+      }}
+    }}
+  ]
+}}
+
+【注意事项】：
+- 每页text要独立完整，有吸引力
+- 如果POI没有photos，image设为null
+- 严格输出JSON格式，不要有其他文字"""
+
+    try:
+        llm = create_llm(max_tokens=1000, temperature=0.3)
+        messages = [SystemMessage(content=system_prompt)]
+        response = await llm.ainvoke(messages)
+
+        # 解析JSON
+        content = response.content.strip()
+
+        # 移除markdown代码块标记
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        guide_card = json.loads(content)
+
+        # 验证结构
+        if "title" not in guide_card or "pages" not in guide_card:
+            raise ValueError("JSON缺少必要字段")
+
+        # 确保pages中的image格式正确
+        for i, page in enumerate(guide_card.get("pages", [])):
+            if page.get("image") and isinstance(page["image"], dict):
+                # 确保有id字段
+                if "id" not in page["image"]:
+                    page["image"]["id"] = f"img_ref_{i+1}"
+
+        return guide_card
+
+    except json.JSONDecodeError as e:
+        logger.error(f"[Structure Generator] JSON解析失败: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[Structure Generator] GuideCard生成失败: {e}")
+        return None
+
